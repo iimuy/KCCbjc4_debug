@@ -15,13 +15,12 @@
 
 
 #import <Foundation/Foundation.h>
-#import "Person.h"
+#import <objc/runtime.h>
+#import "MLDog.h"
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
-        // insert code here...
-        [Person alloc];
-        NSLog(@"iOS 高级之美");
+        printf("ffff");
     }
     return 0;
 }
