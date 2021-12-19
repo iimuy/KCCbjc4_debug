@@ -1341,35 +1341,62 @@ class list_array_tt {
     void attachLists(List* const * addedLists, uint32_t addedCount) {
         if (addedCount == 0) return;
 
-        if (hasArray()) {
+        if (hasArray()) { // 存在数组
             // many lists -> many lists
+            // 这里是把类的地址重新分配新的地址加 newCount 也是分类的创建个数，
+            // 而老的分类信息重新复制一下内存，通过 i-- 倒着取值，所以最先编译的会在最后面，
+            // 获取旧数组元素的个数
             uint32_t oldCount = array()->count;
+            // 计算新数组的元素个数
             uint32_t newCount = oldCount + addedCount;
+            // 重新分配内存空间，以newCount
             array_t *newArray = (array_t *)malloc(array_t::byteSize(newCount));
+            /// 将数组的count赋值为最新的值(newCount)
             newArray->count = newCount;
+            /// 将旧的数组的count更新到最新的值(newCount)
             array()->count = newCount;
-
+            
+            /**
+             * 递减遍历（从最大下标向最小坐标遍历），将就数组里的元素从后往前的依次放到新数组里
+             * oldCount = 2
+             * addedCount = 1;
+             * newCount = 3;
+             * newArray[3];
+             * array()->lists[1] 放到 newArray->lists[1 + 1]
+             * 就数组最后的一个元素，放到新数组的最后一个坐标，
+             * 依次类推这里就可以说明最后编译的分类方法会被优先执行
+             * array()->lists[0] 放到 newArray->lists[0 + 1]
+             */
             for (int i = oldCount - 1; i >= 0; i--)
                 newArray->lists[i + addedCount] = array()->lists[i];
+            
+            // 将新增加的元素从前往后的依次放到新数组里
             for (unsigned i = 0; i < addedCount; i++)
                 newArray->lists[i] = addedLists[i];
+            // 是否旧的数组
             free(array());
+            // 赋值新数组数据
             setArray(newArray);
             validate();
         }
-        else if (!list  &&  addedCount == 1) {
+        else if (!list  &&  addedCount == 1) { //不存在旧数组 并且 添加 1 个新元素
             // 0 lists -> 1 list
             list = addedLists[0];
             validate();
         } 
-        else {
+        else { // 其他情况
             // 1 list -> many lists
             Ptr<List> oldList = list;
+            /// 旧数组元素个数
             uint32_t oldCount = oldList ? 1 : 0;
+            /// 新数组元素个数
             uint32_t newCount = oldCount + addedCount;
+            /// 重新分配内存空间，以newCount
             setArray((array_t *)malloc(array_t::byteSize(newCount)));
             array()->count = newCount;
+            /// 如果存在旧数组，就把旧数组的元素放到数组的最后一个位置
             if (oldList) array()->lists[addedCount] = oldList;
+            /// 将新元素从0到addedCount 依次添加到数组里
             for (unsigned i = 0; i < addedCount; i++)
                 array()->lists[i] = addedLists[i];
             validate();

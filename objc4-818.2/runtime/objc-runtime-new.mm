@@ -1377,6 +1377,8 @@ class_rw_t::extAlloc(const class_ro_t *ro, bool deepCopy)
 // Attach method lists and properties and protocols from categories to a class.
 // Assumes the categories in cats are all loaded and sorted by load order, 
 // oldest categories first.
+// 加载分类方法的核心操作
+// cls:类对象 OR 元类对象，cats_list：分类列表
 static void
 attachCategories(Class cls, const locstamped_category_t *cats_list, uint32_t cats_count,
                  int flags)
@@ -1400,32 +1402,64 @@ attachCategories(Class cls, const locstamped_category_t *cats_list, uint32_t cat
      * and call attachLists on the chunks. attachLists prepends the
      * lists, so the final result is in the expected order.
      */
+    
+    // 先分配固定内存空间来存放方法列表、属性列表和协议列表
     constexpr uint32_t ATTACH_BUFSIZ = 64;
+    // 对象方法列表 OR 类方法列表
+    /*
+    mlists 是一个二维数组
+    [
+     [category01_m_list], 第一个分类的方法列表category01_m_list: [method_t, method_t, method_t, ...]
+     [category02_m_list], 第二个分类的方法列表category02_m_list: [method_t, method_t, method_t, ...]
+    ]
+    */
     method_list_t   *mlists[ATTACH_BUFSIZ];
+    // 属性列表：是二维数组[[property_t, property_t, ....], [property_t, property_t, ....]]
     property_list_t *proplists[ATTACH_BUFSIZ];
+    // 协议列表：是二维数组[[protocol_ref_t, protocol_ref_t, ....], [protocol_ref_t, protocol_ref_t, ....]]
     protocol_list_t *protolists[ATTACH_BUFSIZ];
 
+    //用于记录操作次数，当等于64时会被置为 0
     uint32_t mcount = 0;
     uint32_t propcount = 0;
     uint32_t protocount = 0;
     bool fromBundle = NO;
+    // 是否是元类：YES 元类， NO 类
     bool isMeta = (flags & ATTACH_METACLASS);
+    /*
+     struct class_rw_ext_t {
+         DECLARE_AUTHED_PTR_TEMPLATE(class_ro_t)
+         class_ro_t_authed_ptr<const class_ro_t> ro;
+         method_array_t methods;
+         property_array_t properties;
+         protocol_array_t protocols;
+         char *demangledName;
+         uint32_t version;
+     } rwe;
+     */
     auto rwe = cls->data()->extAllocIfNeeded();
-
+    
+    /// cats_count 分类总数
     for (uint32_t i = 0; i < cats_count; i++) {
+        /// 获取分类
         auto& entry = cats_list[i];
-
+        /// 得到分类的方法列表：isMeta YES 类方法列表，NO 实例方法列表
         method_list_t *mlist = entry.cat->methodsForMeta(isMeta);
         if (mlist) {
-            if (mcount == ATTACH_BUFSIZ) {
+            if (mcount == ATTACH_BUFSIZ) { /// 当mlists中存储了64个元素，就把对象/类方法添加到 cls 中
                 prepareMethodLists(cls, mlists, mcount, NO, fromBundle, __func__);
                 rwe->methods.attachLists(mlists, mcount);
                 mcount = 0;
             }
+            // cattegory 实例/类方法列表天机到mlists数组中
+            // mcount = 0
+            // ATTACH_BUFSIZ = 64
+            // ATTACH_BUFSIZ - ++mcount = 63，以此推理，先编译的分类方法数组会放在mlists底部，所以最后编译的分类方法列表会放在整个方法列表大数组的最前面
             mlists[ATTACH_BUFSIZ - ++mcount] = mlist;
             fromBundle |= entry.hi->isBundle();
         }
-
+        // 同上面一样取出的是分类中的属性列表proplist加到大数组proplists中
+        // proplists是一个二维数组：[[property_t, property_t, ....], [property_t, property_t, ....]]
         property_list_t *proplist =
             entry.cat->propertiesForMeta(isMeta, entry.hi);
         if (proplist) {
@@ -1446,9 +1480,10 @@ attachCategories(Class cls, const locstamped_category_t *cats_list, uint32_t cat
         }
     }
 
-    if (mcount > 0) {
+    if (mcount > 0) {// 将剩余没有添加到cls 中的对象/类方法添加到 methods数组中
         prepareMethodLists(cls, mlists + ATTACH_BUFSIZ - mcount, mcount,
                            NO, fromBundle, __func__);
+        // 将分类的所有对象方法或者类方法，都附加到类对象或者元类对象的方法列表中
         rwe->methods.attachLists(mlists + ATTACH_BUFSIZ - mcount, mcount);
         if (flags & ATTACH_EXISTING) {
             flushCaches(cls, __func__, [](Class c){
@@ -1458,9 +1493,9 @@ attachCategories(Class cls, const locstamped_category_t *cats_list, uint32_t cat
             });
         }
     }
-
+    // 将分类的所有属性附加到类对象的属性列表中，这里运用了数组指针 运算操作，proplists + ATTACH_BUFSIZ - propcount，这个操作会把数组指针移动到未attach的位置
     rwe->properties.attachLists(proplists + ATTACH_BUFSIZ - propcount, propcount);
-
+    // 将分类的所有协议附加到类对象的协议列表中，这里运用了数组指针 运算操作，proplists + ATTACH_BUFSIZ - propcount，这个操作会把数组指针移动到未attach的位置
     rwe->protocols.attachLists(protolists + ATTACH_BUFSIZ - protocount, protocount);
 }
 
@@ -3126,11 +3161,13 @@ map_images(unsigned count, const char * const paths[],
 
 static void load_categories_nolock(header_info *hi) {
     bool hasClassProperties = hi->info()->hasCategoryClassProperties();
-
+ 
     size_t count;
+    /// C++ block
     auto processCatlist = [&](category_t * const *catlist) {
         for (unsigned i = 0; i < count; i++) {
             category_t *cat = catlist[i];
+            
             Class cls = remapClass(cat->cls);
             locstamped_category_t lc{cat, hi};
 
@@ -3146,7 +3183,7 @@ static void load_categories_nolock(header_info *hi) {
             }
 
             // Process this category.
-            if (cls->isStubClass()) {
+            if (cls->isStubClass()) { //是否是基类rootClass
                 // Stub classes are never realized. Stub classes
                 // don't know their metaclass until they're
                 // initialized, so we have to add categories with
@@ -3166,16 +3203,19 @@ static void load_categories_nolock(header_info *hi) {
                 // First, register the category with its target class.
                 // Then, rebuild the class's method lists (etc) if
                 // the class is realized.
+                // 实例方法
                 if (cat->instanceMethods ||  cat->protocols
                     ||  cat->instanceProperties)
                 {
-                    if (cls->isRealized()) {
+                    if (cls->isRealized()) {//若cls已经初始化了，则重新编译该类的方法列表
                         attachCategories(cls, &lc, 1, ATTACH_EXISTING);
                     } else {
+                        // 调用unattachedCategories 类的addForClass方法
+                        // 注册分类并将其加入到当前class
                         objc::unattachedCategories.addForClass(lc, cls);
                     }
                 }
-
+                // 类方法
                 if (cat->classMethods  ||  cat->protocols
                     ||  (hasClassProperties && cat->_classProperties))
                 {
@@ -3188,7 +3228,7 @@ static void load_categories_nolock(header_info *hi) {
             }
         }
     };
-
+    /// 执行block
     processCatlist(hi->catlist(&count));
     processCatlist(hi->catlist2(&count));
 }
@@ -3226,6 +3266,7 @@ load_images(const char *path __unused, const struct mach_header *mh)
     // Discover load methods
     {
         mutex_locker_t lock2(runtimeLock);
+        /// 预处理category和类的load方法
         prepare_load_methods((const headerType *)mh);
     }
 
@@ -3325,7 +3366,10 @@ bool mustReadClasses(header_info *hi, bool hasDyldRoots)
 Class readClass(Class cls, bool headerIsBundle, bool headerIsPreoptimized)
 {
     const char *mangledName = cls->nonlazyMangledName();
-    
+    const char *cusName = "Person";
+    if (strcmp(mangledName, cusName) == 0) {
+        printf("ffff");
+    }
     if (missingWeakSuperclass(cls)) {
         // No superclass (probably weak-linked). 
         // Disavow any knowledge of this subclass.
@@ -3876,8 +3920,9 @@ static void schedule_class_load(Class cls)
     if (cls->data()->flags & RW_LOADED) return;
 
     // Ensure superclass-first ordering
+    // 递归查找父类，知道getSuperclass == nil
     schedule_class_load(cls->getSuperclass());
-
+    // 按照传递的cls 父类-->子类-->孙子类
     add_class_to_loadable_list(cls);
     cls->setInfo(RW_LOADED); 
 }
@@ -3896,13 +3941,16 @@ void prepare_load_methods(const headerType *mhdr)
     size_t count, i;
 
     runtimeLock.assertLocked();
-
+    /// 获取非懒加载的类信息列表
     classref_t const *classlist = 
         _getObjc2NonlazyClassList(mhdr, &count);
     for (i = 0; i < count; i++) {
+        // 收集当前类和父类的，父类优先
+        // 将类和load方法存入add_class_to_loadable_list数组中
         schedule_class_load(remapClass(classlist[i]));
     }
 
+    /// 获取非懒加载的分类信息列表
     category_t * const *categorylist = _getObjc2NonlazyCategoryList(mhdr, &count);
     for (i = 0; i < count; i++) {
         category_t *cat = categorylist[i];
@@ -3914,6 +3962,7 @@ void prepare_load_methods(const headerType *mhdr)
         }
         realizeClassWithoutSwift(cls, nil);
         ASSERT(cls->ISA()->isRealized());
+        /// 将分类的类和load方法存入loadable_categories数组中
         add_category_to_loadable_list(cat);
     }
 }
